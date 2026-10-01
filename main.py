@@ -34,15 +34,10 @@ landmarker = HandLandmarker.create_from_options(options)
 
 HAND_CONNECTIONS = [
     (0, 1), (1, 2), (2, 3), (3, 4),
-
     (0, 5), (5, 6), (6, 7), (7, 8),
-
     (5, 9), (9, 10), (10, 11), (11, 12),
-
     (9, 13), (13, 14), (14, 15), (15, 16),
-
     (13, 17), (17, 18), (18, 19), (19, 20),
-
     (0, 17)
 ]
 
@@ -77,26 +72,31 @@ previous_y = screen_height / 2
 # 5. GESTURE SETTINGS
 # =========================================================
 
-# Number of stable frames needed before action
-GESTURE_CONFIRM_FRAMES = 4
-
-# Pinch threshold
 PINCH_THRESHOLD = 0.35
-
-# Finger must move beyond this value before unlocking
 RELEASE_THRESHOLD = 0.70
 
-# Stable release frames
-RELEASE_CONFIRM_FRAMES = 5
+# A pinch shorter than this becomes a normal left click
+DRAG_HOLD_TIME = 0.65
+
+# Prevent tiny accidental pinches
+MIN_CLICK_TIME = 0.08
+
+# Right-click confirmation
+RIGHT_CONFIRM_FRAMES = 4
+
+# Right-click release confirmation
+RIGHT_RELEASE_FRAMES = 5
 
 
 # =========================================================
-# 6. LEFT CLICK STATE
+# 6. LEFT CLICK / DRAG STATE
 # =========================================================
 
-left_pinch_frames = 0
-left_release_frames = 0
-left_locked = False
+left_pinching = False
+
+left_pinch_start_time = 0
+
+dragging = False
 
 
 # =========================================================
@@ -105,6 +105,7 @@ left_locked = False
 
 right_pinch_frames = 0
 right_release_frames = 0
+
 right_locked = False
 
 
@@ -113,11 +114,12 @@ right_locked = False
 # =========================================================
 
 action_message = ""
+
 action_message_until = 0
 
 
 # =========================================================
-# 9. WEBCAM
+# 9. WEBCAM SETUP
 # =========================================================
 
 cap = cv2.VideoCapture(0)
@@ -132,14 +134,17 @@ if not cap.isOpened():
 
 
 print()
-print("==========================================")
-print("         SMART VIRTUAL MOUSE")
-print("==========================================")
-print("Index finger          -> Move cursor")
-print("Thumb + Index pinch   -> LEFT CLICK")
-print("Thumb + Middle pinch  -> RIGHT CLICK")
-print("Q                     -> Quit")
-print("==========================================")
+print("==============================================")
+print("           SMART VIRTUAL MOUSE")
+print("==============================================")
+print("Index finger            -> Move cursor")
+print("Quick Thumb + Index     -> LEFT CLICK")
+print("Hold Thumb + Index      -> START DRAG")
+print("Move while holding      -> DRAG")
+print("Release Thumb + Index   -> DROP")
+print("Thumb + Middle          -> RIGHT CLICK")
+print("Q                       -> Quit")
+print("==============================================")
 print()
 
 
@@ -155,7 +160,9 @@ while True:
     success, frame = cap.read()
 
     if not success:
+
         print("Could not read webcam frame.")
+
         break
 
 
@@ -166,7 +173,7 @@ while True:
 
 
     # =====================================================
-    # ACTIVE CONTROL AREA
+    # ACTIVE AREA
     # =====================================================
 
     cv2.rectangle(
@@ -219,7 +226,7 @@ while True:
 
 
         # -------------------------------------------------
-        # Landmark -> pixel coordinates
+        # Convert landmarks to pixels
         # -------------------------------------------------
 
         for landmark in hand_landmarks:
@@ -280,11 +287,7 @@ while True:
         finger_x, finger_y = index_tip
 
 
-        # -------------------------------------------------
-        # Highlight important fingertips
-        # -------------------------------------------------
-
-        # Index = blue
+        # Index fingertip
         cv2.circle(
             frame,
             index_tip,
@@ -293,7 +296,8 @@ while True:
             -1
         )
 
-        # Thumb = yellow
+
+        # Thumb fingertip
         cv2.circle(
             frame,
             thumb_tip,
@@ -302,7 +306,8 @@ while True:
             -1
         )
 
-        # Middle = orange-ish
+
+        # Middle fingertip
         cv2.circle(
             frame,
             middle_tip,
@@ -346,6 +351,7 @@ while True:
                 )
             )
 
+
             target_y = max(
                 1,
                 min(
@@ -358,15 +364,26 @@ while True:
             current_x = (
                 previous_x
                 +
-                (target_x - previous_x)
-                / SMOOTHENING
+                (
+                    target_x
+                    -
+                    previous_x
+                )
+                /
+                SMOOTHENING
             )
+
 
             current_y = (
                 previous_y
                 +
-                (target_y - previous_y)
-                / SMOOTHENING
+                (
+                    target_y
+                    -
+                    previous_y
+                )
+                /
+                SMOOTHENING
             )
 
 
@@ -387,7 +404,7 @@ while True:
 
 
         # =================================================
-        # 12. NORMALIZATION
+        # 12. NORMALIZED DISTANCES
         # =================================================
 
         hand_size = math.dist(
@@ -398,23 +415,23 @@ while True:
 
         if hand_size > 0:
 
-            # Thumb ↔ Index
             left_distance = (
                 math.dist(
                     thumb_tip,
                     index_tip
                 )
-                / hand_size
+                /
+                hand_size
             )
 
 
-            # Thumb ↔ Middle
             right_distance = (
                 math.dist(
                     thumb_tip,
                     middle_tip
                 )
-                / hand_size
+                /
+                hand_size
             )
 
         else:
@@ -424,7 +441,7 @@ while True:
 
 
         # =================================================
-        # DRAW GESTURE LINES
+        # GESTURE LINES
         # =================================================
 
         # Thumb -> Index
@@ -448,130 +465,219 @@ while True:
 
 
         # =================================================
-        # 13. LEFT CLICK DETECTION
+        # 13. LEFT CLICK / DRAG STATE MACHINE
         # =================================================
 
-        if left_distance < PINCH_THRESHOLD:
-
-            left_pinch_frames += 1
-            left_release_frames = 0
-
-        elif left_distance > RELEASE_THRESHOLD:
-
-            left_pinch_frames = 0
-
-            if left_locked:
-
-                left_release_frames += 1
-
-                if (
-                    left_release_frames
-                    >= RELEASE_CONFIRM_FRAMES
-                ):
-
-                    left_locked = False
-                    left_release_frames = 0
-
-                    print("LEFT CLICK READY")
-
-            else:
-
-                left_release_frames = 0
-
-        else:
-
-            left_pinch_frames = 0
-            left_release_frames = 0
+        current_time = time.monotonic()
 
 
-        # =================================================
-        # 14. RIGHT CLICK DETECTION
-        # =================================================
-
-        if right_distance < PINCH_THRESHOLD:
-
-            right_pinch_frames += 1
-            right_release_frames = 0
-
-        elif right_distance > RELEASE_THRESHOLD:
-
-            right_pinch_frames = 0
-
-            if right_locked:
-
-                right_release_frames += 1
-
-                if (
-                    right_release_frames
-                    >= RELEASE_CONFIRM_FRAMES
-                ):
-
-                    right_locked = False
-                    right_release_frames = 0
-
-                    print("RIGHT CLICK READY")
-
-            else:
-
-                right_release_frames = 0
-
-        else:
-
-            right_pinch_frames = 0
-            right_release_frames = 0
-
-
-        # =================================================
-        # 15. EXECUTE LEFT CLICK
-        # =================================================
+        # -------------------------------------------------
+        # PINCH START
+        # -------------------------------------------------
 
         if (
-            left_pinch_frames
-            >= GESTURE_CONFIRM_FRAMES
+            left_distance < PINCH_THRESHOLD
             and
-            not left_locked
+            not left_pinching
         ):
 
-            try:
+            left_pinching = True
 
-                pyautogui.click(
-                    button="left"
-                )
+            left_pinch_start_time = current_time
 
-                print("LEFT CLICK")
-
-            except pyautogui.FailSafeException:
-
-                pass
+            print("LEFT PINCH START")
 
 
-            left_locked = True
+        # -------------------------------------------------
+        # PINCH HELD
+        # -------------------------------------------------
 
-            left_pinch_frames = 0
-            left_release_frames = 0
+        if (
+            left_pinching
+            and
+            left_distance < PINCH_THRESHOLD
+        ):
 
-
-            action_message = "LEFT CLICK!"
-
-            action_message_until = (
-                time.monotonic() + 0.5
+            pinch_duration = (
+                current_time
+                -
+                left_pinch_start_time
             )
 
 
-        # =================================================
-        # 16. EXECUTE RIGHT CLICK
-        # =================================================
+            # ---------------------------------------------
+            # Convert long pinch into drag
+            # ---------------------------------------------
+
+            if (
+                pinch_duration >= DRAG_HOLD_TIME
+                and
+                not dragging
+            ):
+
+                try:
+
+                    pyautogui.mouseDown(
+                        button="left"
+                    )
+
+                    dragging = True
+
+                    print("DRAG START")
+
+                    action_message = "DRAG START"
+
+                    action_message_until = (
+                        current_time + 0.7
+                    )
+
+                except pyautogui.FailSafeException:
+
+                    pass
+
+
+        # -------------------------------------------------
+        # PINCH RELEASED
+        # -------------------------------------------------
 
         if (
-            right_pinch_frames
-            >= GESTURE_CONFIRM_FRAMES
+            left_pinching
             and
-            not right_locked
+            left_distance > RELEASE_THRESHOLD
         ):
 
-            # Avoid interpreting an index pinch
-            # as a right click at the same time.
+            pinch_duration = (
+                current_time
+                -
+                left_pinch_start_time
+            )
+
+
+            # ---------------------------------------------
+            # If dragging -> DROP
+            # ---------------------------------------------
+
+            if dragging:
+
+                try:
+
+                    pyautogui.mouseUp(
+                        button="left"
+                    )
+
+                except pyautogui.FailSafeException:
+
+                    pass
+
+
+                dragging = False
+
+                print("DROP")
+
+                action_message = "DROP!"
+
+                action_message_until = (
+                    current_time + 0.7
+                )
+
+
+            # ---------------------------------------------
+            # Otherwise -> LEFT CLICK
+            # ---------------------------------------------
+
+            elif (
+                pinch_duration
+                >= MIN_CLICK_TIME
+                and
+                pinch_duration
+                < DRAG_HOLD_TIME
+            ):
+
+                try:
+
+                    pyautogui.click(
+                        button="left"
+                    )
+
+                    print("LEFT CLICK")
+
+                    action_message = "LEFT CLICK!"
+
+                    action_message_until = (
+                        current_time + 0.5
+                    )
+
+                except pyautogui.FailSafeException:
+
+                    pass
+
+
+            # Reset pinch
+            left_pinching = False
+
+            left_pinch_start_time = 0
+
+
+        # =================================================
+        # 14. RIGHT CLICK
+        # =================================================
+
+        # Do not process right click while dragging
+        if not dragging:
+
+            if right_distance < PINCH_THRESHOLD:
+
+                right_pinch_frames += 1
+
+                right_release_frames = 0
+
+
+            elif right_distance > RELEASE_THRESHOLD:
+
+                right_pinch_frames = 0
+
+
+                if right_locked:
+
+                    right_release_frames += 1
+
+
+                    if (
+                        right_release_frames
+                        >= RIGHT_RELEASE_FRAMES
+                    ):
+
+                        right_locked = False
+
+                        right_release_frames = 0
+
+                        print(
+                            "RIGHT CLICK READY"
+                        )
+
+
+                else:
+
+                    right_release_frames = 0
+
+
+            else:
+
+                right_pinch_frames = 0
+
+                right_release_frames = 0
+
+
+            # ---------------------------------------------
+            # Execute right click
+            # ---------------------------------------------
+
             if (
+                right_pinch_frames
+                >= RIGHT_CONFIRM_FRAMES
+                and
+                not right_locked
+                and
                 left_distance
                 > PINCH_THRESHOLD
             ):
@@ -584,6 +690,14 @@ while True:
 
                     print("RIGHT CLICK")
 
+                    action_message = (
+                        "RIGHT CLICK!"
+                    )
+
+                    action_message_until = (
+                        current_time + 0.5
+                    )
+
                 except pyautogui.FailSafeException:
 
                     pass
@@ -592,23 +706,17 @@ while True:
                 right_locked = True
 
                 right_pinch_frames = 0
+
                 right_release_frames = 0
 
 
-                action_message = "RIGHT CLICK!"
-
-                action_message_until = (
-                    time.monotonic() + 0.5
-                )
-
-
         # =================================================
-        # 17. SCREEN INFORMATION
+        # 15. DISPLAY INFORMATION
         # =================================================
 
         cv2.putText(
             frame,
-            f"Index: {index_tip}",
+            f"Left Pinch: {left_distance:.2f}",
             (20, 35),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.60,
@@ -619,7 +727,7 @@ while True:
 
         cv2.putText(
             frame,
-            f"Left Pinch: {left_distance:.2f}",
+            f"Right Pinch: {right_distance:.2f}",
             (20, 65),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.60,
@@ -628,9 +736,26 @@ while True:
         )
 
 
+        # -------------------------------------------------
+        # Current mouse state
+        # -------------------------------------------------
+
+        if dragging:
+
+            mouse_state = "DRAGGING"
+
+        elif left_pinching:
+
+            mouse_state = "PINCHING"
+
+        else:
+
+            mouse_state = "READY"
+
+
         cv2.putText(
             frame,
-            f"Right Pinch: {right_distance:.2f}",
+            f"Mouse State: {mouse_state}",
             (20, 95),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.60,
@@ -639,61 +764,86 @@ while True:
         )
 
 
-        if left_locked:
+        # -------------------------------------------------
+        # Pinch timer
+        # -------------------------------------------------
 
-            left_state = "LOCKED"
+        if left_pinching:
 
-        else:
-
-            left_state = "READY"
-
-
-        if right_locked:
-
-            right_state = "LOCKED"
-
-        else:
-
-            right_state = "READY"
+            hold_time = (
+                current_time
+                -
+                left_pinch_start_time
+            )
 
 
-        cv2.putText(
-            frame,
-            f"Left: {left_state}",
-            (20, 125),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (255, 255, 255),
-            2
-        )
+            cv2.putText(
+                frame,
+                f"Hold: {hold_time:.2f}s",
+                (20, 125),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.60,
+                (255, 255, 255),
+                2
+            )
 
 
-        cv2.putText(
-            frame,
-            f"Right: {right_state}",
-            (20, 155),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (255, 255, 255),
-            2
-        )
+        # -------------------------------------------------
+        # Drag indicator
+        # -------------------------------------------------
+
+        if dragging:
+
+            cv2.putText(
+                frame,
+                "DRAGGING",
+                (
+                    width // 2 - 80,
+                    height - 30
+                ),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (0, 255, 255),
+                3
+            )
 
 
     # =====================================================
-    # NO HAND
+    # 16. HAND LOST
     # =====================================================
 
     else:
 
-        left_pinch_frames = 0
         right_pinch_frames = 0
-
-        left_release_frames = 0
         right_release_frames = 0
 
 
+        # Safety:
+        # if hand disappears during drag,
+        # release mouse button.
+        if dragging:
+
+            try:
+
+                pyautogui.mouseUp(
+                    button="left"
+                )
+
+            except pyautogui.FailSafeException:
+
+                pass
+
+
+            dragging = False
+            left_pinching = False
+
+            print(
+                "DRAG CANCELLED - HAND LOST"
+            )
+
+
     # =====================================================
-    # ACTION MESSAGE
+    # 17. ACTION MESSAGE
     # =====================================================
 
     if time.monotonic() < action_message_until:
@@ -713,7 +863,7 @@ while True:
 
 
     # =====================================================
-    # DISPLAY
+    # 18. DISPLAY
     # =====================================================
 
     cv2.imshow(
@@ -732,8 +882,23 @@ while True:
 
 
 # =========================================================
-# 18. CLEANUP
+# 19. CLEANUP
 # =========================================================
+
+# Important:
+# never leave mouse button held when program closes.
+if dragging:
+
+    try:
+
+        pyautogui.mouseUp(
+            button="left"
+        )
+
+    except pyautogui.FailSafeException:
+
+        pass
+
 
 cap.release()
 
