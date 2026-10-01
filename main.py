@@ -58,14 +58,35 @@ pyautogui.FAILSAFE = True
 
 
 # =========================================================
-# 4. CURSOR SETTINGS
+# 4. ADAPTIVE CURSOR SETTINGS
 # =========================================================
 
-SMOOTHENING = 7
 FRAME_MARGIN = 100
 
 previous_x = screen_width / 2
 previous_y = screen_height / 2
+
+# Previous fingertip location in camera frame
+previous_finger_x = None
+previous_finger_y = None
+
+# Smoothed movement speed
+filtered_speed = 0
+
+# Speed filtering
+SPEED_FILTER = 0.25
+
+# Adaptive smoothing ranges
+SLOW_SPEED = 5
+FAST_SPEED = 25
+
+# Slow hand movement = stronger smoothing
+MAX_SMOOTHING = 10
+
+# Fast hand movement = weaker smoothing
+MIN_SMOOTHING = 3
+
+current_smoothing = 7
 
 
 # =========================================================
@@ -88,6 +109,7 @@ RIGHT_RELEASE_FRAMES = 5
 
 left_pinching = False
 left_pinch_start_time = 0
+
 dragging = False
 
 
@@ -97,6 +119,7 @@ dragging = False
 
 right_pinch_frames = 0
 right_release_frames = 0
+
 right_locked = False
 
 
@@ -104,13 +127,8 @@ right_locked = False
 # 8. SCROLL SETTINGS
 # =========================================================
 
-# Minimum vertical movement before scrolling
 SCROLL_DEAD_ZONE = 12
-
-# Larger number = stronger scroll
 SCROLL_SPEED = 1
-
-# Delay between scroll commands
 SCROLL_COOLDOWN = 0.08
 
 previous_scroll_y = None
@@ -128,7 +146,7 @@ action_message_until = 0
 
 
 # =========================================================
-# 10. WEBCAM
+# 10. WEBCAM SETUP
 # =========================================================
 
 cap = cv2.VideoCapture(0)
@@ -143,18 +161,18 @@ if not cap.isOpened():
 
 
 print()
-print("==============================================")
-print("           SMART VIRTUAL MOUSE")
-print("==============================================")
+print("================================================")
+print("            SMART VIRTUAL MOUSE")
+print("================================================")
 print("Index finger            -> Move cursor")
 print("Quick Thumb + Index     -> LEFT CLICK")
 print("Hold Thumb + Index      -> DRAG")
 print("Release pinch           -> DROP")
 print("Thumb + Middle          -> RIGHT CLICK")
 print("Index + Middle up       -> SCROLL MODE")
-print("Move 2 fingers up/down  -> SCROLL")
+print("Adaptive smoothing      -> ENABLED")
 print("Q                       -> Quit")
-print("==============================================")
+print("================================================")
 print()
 
 
@@ -170,18 +188,23 @@ while True:
     success, frame = cap.read()
 
     if not success:
+
         print("Could not read webcam frame.")
+
         break
 
 
+    # -----------------------------------------------------
     # Mirror camera
+    # -----------------------------------------------------
+
     frame = cv2.flip(frame, 1)
 
     height, width, _ = frame.shape
 
 
     # =====================================================
-    # ACTIVE AREA
+    # ACTIVE CONTROL AREA
     # =====================================================
 
     cv2.rectangle(
@@ -205,14 +228,17 @@ while True:
         cv2.COLOR_BGR2RGB
     )
 
+
     mp_image = mp.Image(
         image_format=mp.ImageFormat.SRGB,
         data=rgb_frame
     )
 
+
     timestamp_ms = int(
         (time.monotonic() - start_time) * 1000
     )
+
 
     result = landmarker.detect_for_video(
         mp_image,
@@ -232,20 +258,27 @@ while True:
 
 
         # -------------------------------------------------
-        # Normalized -> Pixel coordinates
+        # Convert landmarks to pixels
         # -------------------------------------------------
 
         for landmark in hand_landmarks:
 
-            x = int(landmark.x * width)
-            y = int(landmark.y * height)
+            x = int(
+                landmark.x * width
+            )
 
-            points.append((x, y))
+            y = int(
+                landmark.y * height
+            )
+
+            points.append(
+                (x, y)
+            )
 
 
-        # -------------------------------------------------
-        # Draw skeleton
-        # -------------------------------------------------
+        # =================================================
+        # DRAW HAND
+        # =================================================
 
         for start, end in HAND_CONNECTIONS:
 
@@ -279,7 +312,6 @@ while True:
         index_pip = points[6]
         index_tip = points[8]
 
-        middle_base = points[9]
         middle_pip = points[10]
         middle_tip = points[12]
 
@@ -294,9 +326,9 @@ while True:
         finger_x, finger_y = index_tip
 
 
-        # -------------------------------------------------
-        # Highlight fingertips
-        # -------------------------------------------------
+        # =================================================
+        # HIGHLIGHT FINGERTIPS
+        # =================================================
 
         cv2.circle(
             frame,
@@ -306,6 +338,7 @@ while True:
             -1
         )
 
+
         cv2.circle(
             frame,
             thumb_tip,
@@ -313,6 +346,7 @@ while True:
             (0, 255, 255),
             -1
         )
+
 
         cv2.circle(
             frame,
@@ -324,11 +358,8 @@ while True:
 
 
         # =================================================
-        # 12. FINGER STATE DETECTION
+        # 12. FINGER STATES
         # =================================================
-
-        # Because webcam image is upright:
-        # smaller Y means fingertip is higher.
 
         index_up = (
             index_tip[1]
@@ -336,17 +367,20 @@ while True:
             index_pip[1]
         )
 
+
         middle_up = (
             middle_tip[1]
             <
             middle_pip[1]
         )
 
+
         ring_up = (
             ring_tip[1]
             <
             ring_pip[1]
         )
+
 
         pinky_up = (
             pinky_tip[1]
@@ -355,12 +389,9 @@ while True:
         )
 
 
-        # Scroll gesture:
-        #
-        # Index  = UP
-        # Middle = UP
-        # Ring   = DOWN
-        # Pinky  = DOWN
+        # -------------------------------------------------
+        # Two-finger scroll gesture
+        # -------------------------------------------------
 
         scroll_gesture = (
             index_up
@@ -394,6 +425,7 @@ while True:
                 hand_size
             )
 
+
             right_distance = (
                 math.dist(
                     thumb_tip,
@@ -409,9 +441,9 @@ while True:
             right_distance = 999
 
 
-        # -------------------------------------------------
-        # Gesture lines
-        # -------------------------------------------------
+        # =================================================
+        # GESTURE LINES
+        # =================================================
 
         cv2.line(
             frame,
@@ -420,6 +452,7 @@ while True:
             (255, 0, 255),
             3
         )
+
 
         cv2.line(
             frame,
@@ -434,7 +467,98 @@ while True:
 
 
         # =================================================
-        # 14. SCROLL MODE
+        # 14. ADAPTIVE SPEED CALCULATION
+        # =================================================
+
+        if (
+            previous_finger_x is not None
+            and
+            previous_finger_y is not None
+        ):
+
+            raw_speed = math.dist(
+                (
+                    finger_x,
+                    finger_y
+                ),
+                (
+                    previous_finger_x,
+                    previous_finger_y
+                )
+            )
+
+
+            # ---------------------------------------------
+            # Smooth the measured hand speed
+            # ---------------------------------------------
+
+            filtered_speed = (
+                SPEED_FILTER
+                *
+                raw_speed
+                +
+                (
+                    1 - SPEED_FILTER
+                )
+                *
+                filtered_speed
+            )
+
+
+        else:
+
+            filtered_speed = 0
+
+
+        previous_finger_x = finger_x
+        previous_finger_y = finger_y
+
+
+        # =================================================
+        # 15. CALCULATE ADAPTIVE SMOOTHING
+        # =================================================
+
+        if filtered_speed <= SLOW_SPEED:
+
+            current_smoothing = MAX_SMOOTHING
+
+
+        elif filtered_speed >= FAST_SPEED:
+
+            current_smoothing = MIN_SMOOTHING
+
+
+        else:
+
+            # Convert speed between 5 -> 25
+            # into smoothing between 10 -> 3
+
+            speed_ratio = (
+                filtered_speed
+                -
+                SLOW_SPEED
+            ) / (
+                FAST_SPEED
+                -
+                SLOW_SPEED
+            )
+
+
+            current_smoothing = (
+                MAX_SMOOTHING
+                -
+                speed_ratio
+                *
+                (
+                    MAX_SMOOTHING
+                    -
+                    MIN_SMOOTHING
+                )
+            )
+
+
+        # =================================================
+        # 16. SCROLL MODE
         # =================================================
 
         if (
@@ -448,7 +572,6 @@ while True:
             scrolling = True
 
 
-            # Average Y of index + middle fingertips
             current_scroll_y = (
                 index_tip[1]
                 +
@@ -456,10 +579,11 @@ while True:
             ) / 2
 
 
-            # First frame of scroll gesture
             if previous_scroll_y is None:
 
-                previous_scroll_y = current_scroll_y
+                previous_scroll_y = (
+                    current_scroll_y
+                )
 
 
             else:
@@ -472,15 +596,19 @@ while True:
 
 
                 # -----------------------------------------
-                # Scroll UP
+                # SCROLL UP
                 # -----------------------------------------
 
                 if (
                     scroll_difference
-                    > SCROLL_DEAD_ZONE
+                    >
+                    SCROLL_DEAD_ZONE
                     and
-                    current_time - last_scroll_time
-                    > SCROLL_COOLDOWN
+                    current_time
+                    -
+                    last_scroll_time
+                    >
+                    SCROLL_COOLDOWN
                 ):
 
                     try:
@@ -496,13 +624,17 @@ while True:
                         pass
 
 
-                    action_message = "SCROLL UP"
+                    action_message = (
+                        "SCROLL UP"
+                    )
 
                     action_message_until = (
                         current_time + 0.35
                     )
 
-                    last_scroll_time = current_time
+                    last_scroll_time = (
+                        current_time
+                    )
 
                     previous_scroll_y = (
                         current_scroll_y
@@ -510,15 +642,19 @@ while True:
 
 
                 # -----------------------------------------
-                # Scroll DOWN
+                # SCROLL DOWN
                 # -----------------------------------------
 
                 elif (
                     scroll_difference
-                    < -SCROLL_DEAD_ZONE
+                    <
+                    -SCROLL_DEAD_ZONE
                     and
-                    current_time - last_scroll_time
-                    > SCROLL_COOLDOWN
+                    current_time
+                    -
+                    last_scroll_time
+                    >
+                    SCROLL_COOLDOWN
                 ):
 
                     try:
@@ -534,20 +670,23 @@ while True:
                         pass
 
 
-                    action_message = "SCROLL DOWN"
+                    action_message = (
+                        "SCROLL DOWN"
+                    )
 
                     action_message_until = (
                         current_time + 0.35
                     )
 
-                    last_scroll_time = current_time
+                    last_scroll_time = (
+                        current_time
+                    )
 
                     previous_scroll_y = (
                         current_scroll_y
                     )
 
 
-            # Scroll mode indicator
             cv2.putText(
                 frame,
                 "SCROLL MODE",
@@ -565,36 +704,56 @@ while True:
         else:
 
             scrolling = False
-
             previous_scroll_y = None
 
 
         # =================================================
-        # 15. NORMAL CURSOR MOVEMENT
+        # 17. ADAPTIVE CURSOR MOVEMENT
         # =================================================
 
-        # Cursor is disabled during scroll gesture
         if (
             not scrolling
             and
-            FRAME_MARGIN < finger_x
-            < width - FRAME_MARGIN
+            FRAME_MARGIN
+            <
+            finger_x
+            <
+            width - FRAME_MARGIN
             and
-            FRAME_MARGIN < finger_y
-            < height - FRAME_MARGIN
+            FRAME_MARGIN
+            <
+            finger_y
+            <
+            height - FRAME_MARGIN
         ):
 
             target_x = (
-                (finger_x - FRAME_MARGIN)
+                (
+                    finger_x
+                    -
+                    FRAME_MARGIN
+                )
                 /
-                (width - 2 * FRAME_MARGIN)
+                (
+                    width
+                    -
+                    2 * FRAME_MARGIN
+                )
             ) * screen_width
 
 
             target_y = (
-                (finger_y - FRAME_MARGIN)
+                (
+                    finger_y
+                    -
+                    FRAME_MARGIN
+                )
                 /
-                (height - 2 * FRAME_MARGIN)
+                (
+                    height
+                    -
+                    2 * FRAME_MARGIN
+                )
             ) * screen_height
 
 
@@ -606,6 +765,7 @@ while True:
                 )
             )
 
+
             target_y = max(
                 1,
                 min(
@@ -614,6 +774,10 @@ while True:
                 )
             )
 
+
+            # ---------------------------------------------
+            # ADAPTIVE SMOOTHING
+            # ---------------------------------------------
 
             current_x = (
                 previous_x
@@ -624,7 +788,7 @@ while True:
                     previous_x
                 )
                 /
-                SMOOTHENING
+                current_smoothing
             )
 
 
@@ -637,7 +801,7 @@ while True:
                     previous_y
                 )
                 /
-                SMOOTHENING
+                current_smoothing
             )
 
 
@@ -658,10 +822,9 @@ while True:
 
 
         # =================================================
-        # 16. LEFT CLICK / DRAG
+        # 18. LEFT CLICK / DRAG
         # =================================================
 
-        # Do not click/drag while scrolling
         if not scrolling:
 
 
@@ -683,7 +846,9 @@ while True:
                     current_time
                 )
 
-                print("LEFT PINCH START")
+                print(
+                    "LEFT PINCH START"
+                )
 
 
             # ---------------------------------------------
@@ -705,10 +870,6 @@ while True:
                 )
 
 
-                # -----------------------------------------
-                # Start drag
-                # -----------------------------------------
-
                 if (
                     pinch_duration
                     >=
@@ -725,7 +886,9 @@ while True:
 
                         dragging = True
 
-                        print("DRAG START")
+                        print(
+                            "DRAG START"
+                        )
 
                     except pyautogui.FailSafeException:
 
@@ -789,15 +952,17 @@ while True:
 
 
                 # -----------------------------------------
-                # QUICK PINCH = LEFT CLICK
+                # LEFT CLICK
                 # -----------------------------------------
 
                 elif (
                     pinch_duration
-                    >= MIN_CLICK_TIME
+                    >=
+                    MIN_CLICK_TIME
                     and
                     pinch_duration
-                    < DRAG_HOLD_TIME
+                    <
+                    DRAG_HOLD_TIME
                 ):
 
                     try:
@@ -806,7 +971,9 @@ while True:
                             button="left"
                         )
 
-                        print("LEFT CLICK")
+                        print(
+                            "LEFT CLICK"
+                        )
 
                     except pyautogui.FailSafeException:
 
@@ -823,12 +990,11 @@ while True:
 
 
                 left_pinching = False
-
                 left_pinch_start_time = 0
 
 
         # =================================================
-        # 17. RIGHT CLICK
+        # 19. RIGHT CLICK
         # =================================================
 
         if (
@@ -868,7 +1034,6 @@ while True:
                     ):
 
                         right_locked = False
-
                         right_release_frames = 0
 
                         print(
@@ -888,7 +1053,7 @@ while True:
 
 
             # ---------------------------------------------
-            # Execute right click
+            # EXECUTE RIGHT CLICK
             # ---------------------------------------------
 
             if (
@@ -909,7 +1074,9 @@ while True:
                         button="right"
                     )
 
-                    print("RIGHT CLICK")
+                    print(
+                        "RIGHT CLICK"
+                    )
 
                 except pyautogui.FailSafeException:
 
@@ -917,7 +1084,6 @@ while True:
 
 
                 right_locked = True
-
                 right_pinch_frames = 0
                 right_release_frames = 0
 
@@ -932,12 +1098,12 @@ while True:
 
 
         # =================================================
-        # 18. INFORMATION PANEL
+        # 20. INFORMATION PANEL
         # =================================================
 
         cv2.putText(
             frame,
-            f"Left Pinch: {left_distance:.2f}",
+            f"Speed: {filtered_speed:.1f}",
             (20, 35),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.58,
@@ -948,7 +1114,7 @@ while True:
 
         cv2.putText(
             frame,
-            f"Right Pinch: {right_distance:.2f}",
+            f"Smoothing: {current_smoothing:.1f}",
             (20, 65),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.58,
@@ -957,8 +1123,30 @@ while True:
         )
 
 
+        cv2.putText(
+            frame,
+            f"Left Pinch: {left_distance:.2f}",
+            (20, 95),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 255, 255),
+            2
+        )
+
+
+        cv2.putText(
+            frame,
+            f"Right Pinch: {right_distance:.2f}",
+            (20, 125),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 255, 255),
+            2
+        )
+
+
         # -------------------------------------------------
-        # Mode
+        # MODE
         # -------------------------------------------------
 
         if scrolling:
@@ -981,7 +1169,7 @@ while True:
         cv2.putText(
             frame,
             f"Mode: {mode_text}",
-            (20, 95),
+            (20, 155),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.58,
             (255, 255, 255),
@@ -989,43 +1177,60 @@ while True:
         )
 
 
-        # -------------------------------------------------
-        # Finger states
-        # -------------------------------------------------
+        # =================================================
+        # ADAPTIVE MODE LABEL
+        # =================================================
 
-        finger_text = (
-            f"I:{int(index_up)} "
-            f"M:{int(middle_up)} "
-            f"R:{int(ring_up)} "
-            f"P:{int(pinky_up)}"
-        )
+        if filtered_speed <= SLOW_SPEED:
+
+            adaptive_mode = "PRECISION"
+
+
+        elif filtered_speed >= FAST_SPEED:
+
+            adaptive_mode = "FAST"
+
+
+        else:
+
+            adaptive_mode = "BALANCED"
 
 
         cv2.putText(
             frame,
-            finger_text,
-            (20, 125),
+            f"Adaptive: {adaptive_mode}",
+            (20, 185),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
+            0.58,
             (255, 255, 255),
             2
         )
 
 
     # =====================================================
-    # 19. HAND LOST
+    # 21. HAND LOST
     # =====================================================
 
     else:
 
         previous_scroll_y = None
+
         scrolling = False
+
+        previous_finger_x = None
+        previous_finger_y = None
+
+        filtered_speed = 0
+
 
         right_pinch_frames = 0
         right_release_frames = 0
 
 
-        # Safety release
+        # -------------------------------------------------
+        # Safety release if hand disappears during drag
+        # -------------------------------------------------
+
         if dragging:
 
             try:
@@ -1048,7 +1253,7 @@ while True:
 
 
     # =====================================================
-    # 20. ACTION MESSAGE
+    # 22. ACTION MESSAGE
     # =====================================================
 
     if (
@@ -1072,7 +1277,7 @@ while True:
 
 
     # =====================================================
-    # 21. DISPLAY
+    # 23. DISPLAY
     # =====================================================
 
     cv2.imshow(
@@ -1091,10 +1296,9 @@ while True:
 
 
 # =========================================================
-# 22. CLEANUP
+# 24. CLEANUP
 # =========================================================
 
-# Never leave mouse button held
 if dragging:
 
     try:
